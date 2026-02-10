@@ -1,0 +1,227 @@
+name: Build Release Packages
+
+on:
+  push:
+    branches:
+      - 'ci-**'
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - 'ci-**'
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Patching
+        run: |
+          sed -i '' 's/^productName: Chatbox$/productName: Chatbox-Querit/' electron-builder.yml
+          sed -i '' "/capacitor-stream-http/a\\
+          \ \ \ \ '@capacitor/android', // mobile only\\
+          \ \ \ \ '@capacitor/ios', // mobile only\\
+          " .erb/configs/webpack.config.renderer.dev.dll.ts
+          cat > .erb/scripts/notarize.js << 'EOF'
+          import { execSync } from 'child_process'
+          import path from 'path'
+
+          export default async function signAdHoc(context) {
+              if (context.electronPlatformName !== 'darwin') return
+              const appPath = path.join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`)
+              execSync(`codesign --force --deep --sign - "${appPath}"`)
+          }
+          EOF
+          cat > .erb/scripts/delete-source-maps-runner.js << 'EOF'
+          import deleteSourceMaps from './delete-source-maps';
+          deleteSourceMaps();
+          EOF
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Cache node_modules
+        id: cache-node-modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-modules-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-modules-
+
+      - name: Cache Electron
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/electron
+            ~/Library/Caches/electron-builder
+          key: ${{ runner.os }}-electron-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-electron-
+
+      - name: Install dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+
+      - name: Build and package application (macOS)
+        run: npm run package -- --mac
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatbox-macos
+          path: |
+            release/build/*.dmg
+          if-no-files-found: ignore
+          retention-days: 30
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Patching
+        shell: pwsh
+        run: |
+          $content = Get-Content electron-builder.yml -Raw
+          $content = $content -replace '^productName: Chatbox$', 'productName: Chatbox-Querit'
+          $content = $content -replace '  sign: \./custom_win_sign\.js\r?\n', ''
+          $content = $content -replace '  signingHashAlgorithms:\r?\n    - sha256\r?\n', ''
+          Set-Content electron-builder.yml -Value $content -NoNewline
+
+          $webpackContent = Get-Content .erb/configs/webpack.config.renderer.dev.dll.ts -Raw
+          $webpackContent = $webpackContent -replace "(capacitor-stream-http.*\r?\n)", "`$1    '@capacitor/android', // mobile only`r`n    '@capacitor/ios', // mobile only`r`n"
+          Set-Content .erb/configs/webpack.config.renderer.dev.dll.ts -Value $webpackContent -NoNewline
+
+          @'
+          import deleteSourceMaps from './delete-source-maps';
+          deleteSourceMaps();
+          '@ | Set-Content .erb/scripts/delete-source-maps-runner.js -NoNewline
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Cache node_modules
+        id: cache-node-modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-modules-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-modules-
+
+      - name: Cache Electron
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~\AppData\Local\electron\Cache
+            ~\AppData\Local\electron-builder\Cache
+          key: ${{ runner.os }}-electron-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-electron-
+
+      - name: Install dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+
+      - name: Build and package application (Windows)
+        run: npm run package -- --win
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatbox-windows
+          path: |
+            release/build/*.exe
+            release/build/*.msi
+          if-no-files-found: ignore
+          retention-days: 30
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Patching
+        run: |
+          sed -i 's/^productName: Chatbox$/productName: Chatbox-Querit/' electron-builder.yml
+          sed -i "/capacitor-stream-http/a\\    '@capacitor/android', // mobile only\\n    '@capacitor/ios', // mobile only\\n" .erb/configs/webpack.config.renderer.dev.dll.ts
+          cat > .erb/scripts/delete-source-maps-runner.js << 'EOF'
+          import deleteSourceMaps from './delete-source-maps';
+          deleteSourceMaps();
+          EOF
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Cache node_modules
+        id: cache-node-modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-modules-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-modules-
+
+      - name: Cache Electron
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/electron
+            ~/.cache/electron-builder
+          key: ${{ runner.os }}-electron-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-electron-
+
+      - name: Install dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+
+      - name: Build and package application (Linux)
+        run: npm run package -- --linux
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatbox-linux
+          path: |
+            release/build/*.AppImage
+            release/build/*.deb
+            release/build/*.rpm
+          if-no-files-found: ignore
+          retention-days: 30
+
+  release:
+    needs: [build-macos, build-windows, build-linux]
+    runs-on: ubuntu-latest
+    if: |
+      startsWith(github.ref, 'refs/tags/v') &&
+      (always() && !cancelled() && !failure())
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            artifacts/chatbox-macos/*
+            artifacts/chatbox-windows/*
+            artifacts/chatbox-linux/*
+          draft: false
+          prerelease: false
+          generate_release_notes: true
